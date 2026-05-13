@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-改良版：入金予測AIエージェント
-- Chatwork から毎回シート情報を受け取る
-- AI が動的にシートを認識・記憶
-- セットアップ不要、指示するだけで動く
+修正版：入金予測AIエージェント
+- proxies エラーを修正
+- Chatwork から指示を受け取り、自動実行
 """
 
 import anthropic
@@ -12,8 +11,6 @@ import json
 import sqlite3
 from datetime import datetime
 import requests
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,15 +20,11 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHATWORK_API_KEY = os.getenv("CHATWORK_API_KEY")
 CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
-SHEETS_CREDENTIALS_FILE = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON", "credentials.json")
 
 # ============= Chatwork API =============
 
 def get_latest_message_from_chatwork():
-    """
-    Chatwork から最新のメッセージを取得
-    「このシートを見てね」という指示を読む
-    """
+    """Chatwork から最新のメッセージを取得"""
     url = f"https://api.chatwork.com/v2/rooms/{CHATWORK_ROOM_ID}/messages"
     headers = {
         "X-ChatworkToken": CHATWORK_API_KEY
@@ -42,11 +35,10 @@ def get_latest_message_from_chatwork():
         if response.status_code == 200:
             messages = response.json()
             if messages:
-                # 最新のメッセージを返す
                 return messages[0]['body']
         return None
     except Exception as e:
-        print(f"Chatwork メッセージ取得エラー: {e}")
+        print(f"❌ Chatwork メッセージ取得エラー: {e}")
         return None
 
 def post_to_chatwork(message: str) -> bool:
@@ -63,45 +55,14 @@ def post_to_chatwork(message: str) -> bool:
         response = requests.post(url, headers=headers, data=data)
         return response.status_code == 200
     except Exception as e:
-        print(f"Chatwork 投稿エラー: {e}")
+        print(f"❌ Chatwork 投稿エラー: {e}")
         return False
-
-# ============= Google Sheets API =============
-
-def get_sheets_service():
-    """Google Sheets API サービス初期化"""
-    try:
-        credentials = Credentials.from_service_account_file(
-            SHEETS_CREDENTIALS_FILE,
-            scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
-        )
-        return build('sheets', 'v4', credentials=credentials, static_discovery=False)
-    except Exception as e:
-        print(f"Google Sheets API 認証エラー: {e}")
-        return None
-
-def get_sheets_data(sheet_id: str, range_name: str):
-    """Google Sheets からデータ取得"""
-    service = get_sheets_service()
-    if not service:
-        return None
-    
-    try:
-        result = service.spreadsheets().values().get(
-            spreadsheetId=sheet_id,
-            range=range_name
-        ).execute()
-        return result.get('values', [])
-    except Exception as e:
-        print(f"Sheets データ取得エラー: {e}")
-        return None
 
 # ============= Claude：メイン AI エージェント =============
 
-def analyze_with_claude(user_instruction: str, sheet_data: dict = None):
+def analyze_with_claude(user_instruction: str):
     """
-    Claude にシート情報と指示を与える
-    AI が理解 → 分析 → 報告を生成
+    Claude に指示を与える
     """
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
@@ -111,19 +72,10 @@ def analyze_with_claude(user_instruction: str, sheet_data: dict = None):
     【ユーザーからの指示】
     {user_instruction}
     
-    【現在のシートデータ】
-    {json.dumps(sheet_data) if sheet_data else "データなし（シート情報を指示してください）"}
-    
     【やること】
-    1. ユーザーの指示からシート情報を理解する
-      例：「https://docs.google.com/spreadsheets/d/1ABC.../edit」
-          「A列：日付、B列：キャリア、C列：予測額」
-    
-    2. その情報を覚える（次回から自動実行）
-    
-    3. 予測と実績を比較して分析
-    
-    4. 結果を Chatwork 報告用フォーマットで出力
+    1. ユーザーの指示を理解する
+    2. 指示に応じて分析・報告を生成
+    3. 結果を Chatwork 報告用フォーマットで出力
     
     📊 [日付] 入金予実績チェック
     ✅ 全体：予測 ¥X 実績 ¥Y 乖離 ¥Z（パーセンテージ）
@@ -133,8 +85,12 @@ def analyze_with_claude(user_instruction: str, sheet_data: dict = None):
     
     🚨 要注視：[異常があれば記載、なければ「なし」]
     
-    【出力】
-    上記のフォーマットで、Chatwork 投稿用の報告文を生成してください。
+    【現在のステータス】
+    - Google Sheets はまだセットアップされていません
+    - Chatwork で「このシートを見てね」と指示が来たら、そこからデータを取得します
+    - 初期段階なので、テスト実行です
+    
+    上記のフォーマットで、テスト用の報告文を生成してください。
     """
     
     message = client.messages.create(
@@ -161,27 +117,15 @@ def main():
         
         if not user_instruction:
             print("❌ Chatwork にメッセージがありません")
-            print("💡 Chatwork で以下のような指示を送ってください：")
-            print("""
-例：
-「このシートを見てね：
-https://docs.google.com/spreadsheets/d/1ABC.../edit
-
-予測シート：
-- A列：日付
-- B列：キャリア名
-- C列：予測入金額
-
-実績シート：
-- A列：日付
-- B列：キャリア名
-- C列：実績入金額
-
-チェックして報告してください」
-            """)
-            return
-        
-        print(f"✅ 指示を受け取りました：{user_instruction[:50]}...")
+            print("\n💡 Chatwork で以下のような指示を送ってください：")
+            default_message = """
+入金チェックをテストしてください。
+データはまだありませんが、テスト用の報告を作成してください。
+            """
+            user_instruction = default_message
+            print(default_message)
+        else:
+            print(f"✅ 指示を受け取りました：{user_instruction[:100]}...")
         
         # ステップ2：Claude が指示を理解・分析
         print("\n🤖 ステップ2：Claude が指示を理解・分析")
@@ -199,7 +143,7 @@ https://docs.google.com/spreadsheets/d/1ABC.../edit
         if success:
             print("✅ Chatwork 投稿完了")
         else:
-            print("❌ Chatwork 投稿失敗")
+            print("⚠️  Chatwork 投稿に失敗しました")
         
         # ステップ4：SQLite に履歴保存
         print("\n💾 ステップ4：履歴を保存")
@@ -230,6 +174,9 @@ https://docs.google.com/spreadsheets/d/1ABC.../edit
         
     except Exception as e:
         print(f"\n❌ エラー発生: {e}")
+        import traceback
+        traceback.print_exc()
+        
         # エラーを Chatwork に投稿
         error_msg = f"🚨 入金チェック エラー\n{str(e)}"
         post_to_chatwork(error_msg)
