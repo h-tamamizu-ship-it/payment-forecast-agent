@@ -75,7 +75,7 @@ def get_sheets_service():
             SHEETS_CREDENTIALS_FILE,
             scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
         )
-        return build('sheets', 'v4', credentials=credentials)
+        return build('sheets', 'v4', credentials=credentials, static_discovery=False)
     except Exception as e:
         print(f"Google Sheets API 認証エラー: {e}")
         return None
