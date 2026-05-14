@@ -268,7 +268,18 @@ def webhook():
         else:
             data = request.form.to_dict() if request.form else {}
         
-        message_body = data.get('webhook_event', {}).get('body', '')
+        # ===== デバッグ：Webhook データを全部出力 =====
+        print(f"DEBUG: 受け取った全データ: {json.dumps(data, ensure_ascii=False)}")
+        
+        # Webhook イベントから送信者情報を取得
+        webhook_event = data.get('webhook_event', {})
+        message_body = webhook_event.get('body', '')
+        from_account_name = webhook_event.get('from_account_name', '')
+        from_account_id = webhook_event.get('from_account_id', '')
+        
+        print(f"DEBUG: from_account_name = {from_account_name}")
+        print(f"DEBUG: from_account_id = {from_account_id}")
+        print(f"DEBUG: message_body = {message_body[:100]}")
         
         if not message_body:
             return 'OK', 200
