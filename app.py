@@ -128,39 +128,43 @@ def analyze_message(user_message):
 【現在の保存済みタスク】
 {tasks_text}
 
-【判定タスク】
-このメッセージを分析して、以下を JSON で出力してください：
+メッセージの意図を判定して、JSON で返してください：
 
 {{
-  "message_type": "new_task" / "update_task" / "execute_task" / "unknown",
-  "task_name": "タスク名（例：入金チェック、請求書照合）",
-  "instruction": "具体的な指示内容（new_task または update_task の場合）",
-  "reason": "判定理由"
+  "message_type": "new_task",
+  "task_name": "入金チェック",
+  "instruction": "{user_message}",
+  "reason": "新規指示"
 }}
 
-判定基準：
-- new_task: 新しい業務を指示（「●●をチェックして」など初めての業務）
-- update_task: 既存タスクを修正（「いや、△△に変えて」など既存業務の修正）
-- execute_task: 既存タスクを実行（「チェック」「確認」など簡潔な実行指示）
-- unknown: 判定不可
+メッセージが：
+- 新しい業務指示なら: message_type を "new_task"
+- 既存タスク修正なら: message_type を "update_task"  
+- 既存タスク実行なら: message_type を "execute_task"
 
-JSON だけを出力してください。"""
+JSON だけを出力してください。他に何も出力しないでください。"""
     
     response = call_claude_api(prompt)
+    print(f"DEBUG: Claude response: {response}")
     
     try:
         import re
-        json_match = re.search(r'\{[\s\S]*\}', response)
+        # 複数の { } がある場合は最初のものを取得
+        json_match = re.search(r'\{[^{}]*\}', response)
         if json_match:
-            return json.loads(json_match.group())
+            parsed = json.loads(json_match.group())
+            print(f"DEBUG: Parsed JSON: {parsed}")
+            return parsed
     except Exception as e:
-        print(f"JSON パース失敗: {e}")
+        print(f"JSON パース失敗: {e}, Response: {response}")
     
+    # デフォルト：新規タスクとして扱う
+    print(f"DEBUG: Falling back to default")
     return {
-        "message_type": "unknown",
-        "task_name": "不明",
+        "message_type": "new_task",
+        "task_name": "デフォルトタスク",
         "instruction": user_message,
-        "reason": "分析失敗"
+        "reason": "自動判定失敗のため新規タスクとして処理"
     }
 
 def execute_task(task_name, instruction):
