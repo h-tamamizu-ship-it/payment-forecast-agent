@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 import os
 import json
-import sqlite3
-from datetime import datetime
 import requests
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,18 +10,6 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHATWORK_API_KEY = os.getenv("CHATWORK_API_KEY")
 CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
-
-def init_database():
-    conn = sqlite3.connect('ai_agent_memory.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS agent_config 
-    (id INTEGER PRIMARY KEY, instruction_type TEXT UNIQUE, full_instruction TEXT, 
-    sheet_url TEXT, column_mapping JSON, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS execution_history 
-    (id INTEGER PRIMARY KEY AUTOINCREMENT, execution_time DATETIME DEFAULT CURRENT_TIMESTAMP, 
-    instruction_type TEXT, data_provided TEXT, analysis_result TEXT)''')
-    conn.commit()
-    conn.close()
 
 def get_latest_message():
     url = f"https://api.chatwork.com/v2/rooms/{CHATWORK_ROOM_ID}/messages"
@@ -57,13 +44,23 @@ def call_claude(prompt):
         "max_tokens": 1000,
         "messages": [{"role": "user", "content": prompt}]
     }
+    
+    print(f"DEBUG: API キー長：{len(ANTHROPIC_API_KEY)}")
+    print(f"DEBUG: Chatwork ルーム ID：{CHATWORK_ROOM_ID}")
+    
     try:
         response = requests.post(url, headers=headers, json=data)
+        print(f"DEBUG: ステータスコード：{response.status_code}")
+        print(f"DEBUG: レスポンス：{response.text[:200]}")
+        
         if response.status_code == 200:
             result = response.json()
             return result['content'][0]['text']
+        else:
+            print(f"Claude API エラー: {response.status_code} {response.text}")
     except Exception as e:
-        print(f"Claude エラー: {e}")
+        print(f"リクエスト エラー: {e}")
+    
     return None
 
 def main():
@@ -71,8 +68,6 @@ def main():
     print(f"🤖 入金予測AIエージェント起動")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
-    
-    init_database()
     
     print("\n📥 Chatwork からメッセージを取得")
     user_message = get_latest_message()
@@ -86,34 +81,24 @@ def main():
     print("\n🤖 Claude で分析")
     prompt = f"""あなたは Enks 社の経理AIエージェントです。
 
-【ユーザーのメッセージ】
+【メッセージ】
 {user_message}
 
-入金チェックの報告を以下フォーマットで作成してください：
-
-📊 入金予実績チェック
-✅ テスト実行完了
-🔍 Chatwork からの指示を受け取りました
-🚨 要注視：なし"""
+入金チェック報告を作成してください。"""
     
     report = call_claude(prompt)
     
     if not report:
-        print("❌ Claude からの応答がありません")
-        return
+        report = "🚨 Claude からの応答がありませんでした"
     
     print("\n【報告】")
-    print("-" * 80)
     print(report)
-    print("-" * 80)
     
     print("\n💬 Chatwork に投稿")
     if post_to_chatwork(report):
         print("✅ 投稿完了")
     
-    print("\n" + "=" * 80)
-    print("✅ 実行完了")
-    print("=" * 80)
+    print("\n✅ 実行完了\n")
 
 if __name__ == "__main__":
     main()
