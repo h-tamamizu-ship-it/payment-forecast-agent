@@ -279,5 +279,3 @@ def main():
     print("=" * 80)
     print("✅ 実行完了\n")
 
-if __name__ == "__main__":
-    main()
