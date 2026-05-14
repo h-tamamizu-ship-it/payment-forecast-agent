@@ -52,7 +52,7 @@ def get_all_tasks():
     conn.close()
     return tasks
 
-def get_task_history(task_name, limit=10):
+def get_task_history(task_name, limit=5):
     """特定のタスクに関する過去のやり取りを取得"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -268,25 +268,19 @@ def webhook():
         else:
             data = request.form.to_dict() if request.form else {}
         
-        # ===== デバッグ：Webhook データを全部出力 =====
-        print(f"DEBUG: 受け取った全データ: {json.dumps(data, ensure_ascii=False)}")
-        
         # Webhook イベントから送信者情報を取得
         webhook_event = data.get('webhook_event', {})
         message_body = webhook_event.get('body', '')
-        from_account_name = webhook_event.get('from_account_name', '')
-        from_account_id = webhook_event.get('from_account_id', '')
+        account_id = webhook_event.get('account_id', '')
         
-        print(f"DEBUG: from_account_name = {from_account_name}")
-        print(f"DEBUG: from_account_id = {from_account_id}")
-        print(f"DEBUG: message_body = {message_body[:100]}")
+        print(f"📥 account_id = {account_id}, message = {message_body[:50]}")
         
         if not message_body:
             return 'OK', 200
         
-        # AI の返信（✅で始まる）に反応しない
-        if message_body.startswith('✅'):
-            print(f"⚠️ AI の返信をスキップ")
+        # ===== AI からの投稿は無視（account_id が空 = AI） =====
+        if not account_id:
+            print(f"⚠️ AI からの投稿をスキップ")
             return 'OK', 200
         
         # 重複排除
