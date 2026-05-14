@@ -16,7 +16,7 @@ CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 # AI アカウント ID
-AI_ACCOUNT_ID = "3ht2rxf1y52cg"
+AI_ACCOUNT_ID = "11369834"
 
 DB_PATH = "/tmp/payment_forecast.db"
 
