@@ -12,16 +12,26 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 @app.route('/', methods=['GET', 'POST'])
 def webhook():
-    print(f"DEBUG: Request received - Method: {request.method}")
-    print(f"DEBUG: Request data: {request.get_data()}")
-    print(f"DEBUG: Request JSON: {request.get_json()}")
-    
     if request.method == 'GET':
         return 'OK', 200
     
     try:
-        data = request.get_json()
-        print(f"DEBUG: Parsed data: {data}")
+        # Content-Type が何でも対応
+        if request.content_type and 'application/json' in request.content_type:
+            data = request.get_json()
+        else:
+            # Form data として取得
+            data = request.form.to_dict()
+            if not data:
+                data = request.get_data(as_text=True)
+        
+        print(f"DEBUG: data = {data}")
+        
+        # Chatwork Webhook のデータ形式を確認
+        if isinstance(data, str):
+            import json
+            data = json.loads(data)
+        
         message_body = data.get('webhook_event', {}).get('body', '')
         
         if not message_body:
