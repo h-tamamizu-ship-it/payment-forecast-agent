@@ -15,6 +15,9 @@ AI_CHATWORK_API_KEY = os.getenv("AI_CHATWORK_API_KEY")
 CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
+# AI アカウント ID
+AI_ACCOUNT_ID = "3ht2rxf1y52cg"
+
 DB_PATH = "/tmp/payment_forecast.db"
 
 def init_db():
@@ -289,9 +292,9 @@ def webhook():
         if not message_body:
             return 'OK', 200
         
-        # ===== AI からの投稿は無視（account_id が空 = AI） =====
-        if not account_id:
-            print(f"⚠️ AI からの投稿をスキップ")
+        # ===== AI アカウントからの投稿は無視 =====
+        if str(account_id) == AI_ACCOUNT_ID:
+            print(f"⚠️ AI アカウント（{AI_ACCOUNT_ID}）からの投稿をスキップ")
             return 'OK', 200
         
         # 重複排除
