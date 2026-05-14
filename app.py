@@ -16,29 +16,26 @@ def webhook():
         return 'OK', 200
     
     try:
-        # Content-Type が何でも対応
-        if request.content_type and 'application/json' in request.content_type:
+        # どのデータ形式でも対応
+        if request.is_json:
             data = request.get_json()
         else:
-            # Form data として取得
-            data = request.form.to_dict()
-            if not data:
-                data = request.get_data(as_text=True)
+            data = request.form.to_dict() if request.form else {}
         
-        print(f"DEBUG: data = {data}")
+        print(f"DEBUG: Received data: {data}")
         
-        # Chatwork Webhook のデータ形式を確認
-        if isinstance(data, str):
-            import json
-            data = json.loads(data)
-        
+        # Chatwork Webhook のデータ形式に対応
+        # webhook_event.body にメッセージが入っている
         message_body = data.get('webhook_event', {}).get('body', '')
         
         if not message_body:
+            # もしくは他のフォーマットかもしれない
+            print("DEBUG: No message_body found, checking alternative formats...")
             return 'OK', 200
         
-        print(f"📥 受信：{message_body}")
+        print(f"📥 受信メッセージ：{message_body}")
         
+        # Chatwork に返信
         report = f"✅ 受け取りました：{message_body[:50]}"
         post_to_chatwork(report)
         
@@ -54,5 +51,6 @@ def post_to_chatwork(message: str):
     headers = {"X-ChatworkToken": CHATWORK_API_KEY}
     try:
         requests.post(url, headers=headers, data={"body": message})
-    except:
-        pass
+        print("✅ Chatwork に投稿しました")
+    except Exception as e:
+        print(f"Chatwork 投稿エラー：{e}")
