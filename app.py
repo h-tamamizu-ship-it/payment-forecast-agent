@@ -12,6 +12,9 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 @app.route('/', methods=['GET', 'POST'])
 def webhook():
+    if request.method == 'GET':
+        return 'OK', 200
+    
     try:
         data = request.get_json()
         message_body = data.get('webhook_event', {}).get('body', '')
