@@ -1,114 +1,110 @@
 #!/usr/bin/env python3
 """
-入金予測AIエージェント（requests のみで実装）
-- Google Sheets API ライブラリを使わない
-- requests で直接 Google Sheets API を呼び出す
-- Chatwork で指示を受け取る
+完全版：入金予測AIエージェント
+- 初回指示から全て SQLite に記憶
+- 2回目以降は簡単な指示で自動実行
+- 真の自律型AIエージェント
 """
 
 import anthropic
 import os
 import json
+import sqlite3
 from datetime import datetime
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ============= 設定 =============
-
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHATWORK_API_KEY = os.getenv("CHATWORK_API_KEY")
 CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
-SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
 
-# ============= Google Sheets API（requests のみ） =============
-
-def get_access_token():
-    """サービスアカウントから access token を取得"""
-    try:
-        credentials_dict = json.loads(SHEETS_CREDENTIALS_JSON)
-        
-        # JWT 作成
-        import time
-        import base64
-        import hmac
-        import hashlib
-        
-        header = {"alg": "RS256", "typ": "JWT"}
-        now = int(time.time())
-        payload = {
-            "iss": credentials_dict["client_email"],
-            "scope": "https://www.googleapis.com/auth/spreadsheets.readonly",
-            "aud": "https://oauth2.googleapis.com/token",
-            "exp": now + 3600,
-            "iat": now
-        }
-        
-        # Base64 エンコード
-        header_encoded = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip('=')
-        payload_encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
-        
-        # 署名
-        message = f"{header_encoded}.{payload_encoded}"
-        private_key = credentials_dict["private_key"]
-        signature = base64.urlsafe_b64encode(
-            hmac.new(private_key.encode(), message.encode(), hashlib.sha256).digest()
-        ).decode().rstrip('=')
-        
-        jwt = f"{message}.{signature}"
-        
-        # トークン取得
-        response = requests.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                "assertion": jwt
-            }
-        )
-        
-        if response.status_code == 200:
-            return response.json()["access_token"]
-        else:
-            print(f"Token 取得失敗: {response.text}")
-            return None
+def init_database():
+    conn = sqlite3.connect('ai_agent_memory.db')
+    c = conn.cursor()
     
-    except Exception as e:
-        print(f"Access Token 取得エラー: {e}")
-        return None
-
-def get_sheets_data(sheet_id: str, range_name: str):
-    """Google Sheets からデータ取得（requests のみ）"""
-    try:
-        access_token = get_access_token()
-        if not access_token:
-            return None
-        
-        url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{range_name}"
-        headers = {
-            "Authorization": f"Bearer {access_token}"
-        }
-        
-        response = requests.get(url, headers=headers)
-        
-        if response.status_code == 200:
-            return response.json().get('values', [])
-        else:
-            print(f"Sheets データ取得失敗: {response.text}")
-            return None
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS agent_config (
+        id INTEGER PRIMARY KEY,
+        instruction_type TEXT UNIQUE,
+        full_instruction TEXT,
+        sheet_url TEXT,
+        column_mapping JSON,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
     
-    except Exception as e:
-        print(f"Sheets データ取得エラー: {e}")
-        return None
+    c.execute('''
+    CREATE TABLE IF NOT EXISTS execution_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        execution_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+        instruction_type TEXT,
+        data_provided TEXT,
+        analysis_result TEXT,
+        chatwork_posted BOOLEAN
+    )
+    ''')
+    
+    conn.commit()
+    return conn
 
-# ============= Chatwork API =============
+def save_instruction(instruction_type: str, full_instruction: str, sheet_url: str = None, columns: dict = None):
+    conn = sqlite3.connect('ai_agent_memory.db')
+    c = conn.cursor()
+    
+    c.execute('''
+    INSERT OR REPLACE INTO agent_config 
+    (instruction_type, full_instruction, sheet_url, column_mapping, updated_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ''', (
+        instruction_type,
+        full_instruction,
+        sheet_url,
+        json.dumps(columns) if columns else None
+    ))
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ 指示を記憶しました：{instruction_type}")
 
-def get_latest_message_from_chatwork():
-    """Chatwork から最新のメッセージを取得"""
+def get_saved_instruction(instruction_type: str):
+    conn = sqlite3.connect('ai_agent_memory.db')
+    c = conn.cursor()
+    
+    c.execute('''
+    SELECT full_instruction, sheet_url, column_mapping FROM agent_config
+    WHERE instruction_type = ?
+    ''', (instruction_type,))
+    
+    result = c.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            "full_instruction": result[0],
+            "sheet_url": result[1],
+            "columns": json.loads(result[2]) if result[2] else {}
+        }
+    return None
+
+def save_execution(instruction_type: str, data: str, result: str, posted: bool):
+    conn = sqlite3.connect('ai_agent_memory.db')
+    c = conn.cursor()
+    
+    c.execute('''
+    INSERT INTO execution_history 
+    (instruction_type, data_provided, analysis_result, chatwork_posted)
+    VALUES (?, ?, ?, ?)
+    ''', (instruction_type, data, result, posted))
+    
+    conn.commit()
+    conn.close()
+
+def get_latest_message():
     url = f"https://api.chatwork.com/v2/rooms/{CHATWORK_ROOM_ID}/messages"
-    headers = {
-        "X-ChatworkToken": CHATWORK_API_KEY
-    }
+    headers = {"X-ChatworkToken": CHATWORK_API_KEY}
     
     try:
         response = requests.get(url, headers=headers)
@@ -118,108 +114,128 @@ def get_latest_message_from_chatwork():
                 return messages[0]['body']
         return None
     except Exception as e:
-        print(f"Chatwork メッセージ取得エラー: {e}")
+        print(f"エラー: {e}")
         return None
 
 def post_to_chatwork(message: str) -> bool:
-    """Chatwork にメッセージを投稿"""
     url = f"https://api.chatwork.com/v2/rooms/{CHATWORK_ROOM_ID}/messages"
-    headers = {
-        "X-ChatworkToken": CHATWORK_API_KEY
-    }
-    data = {
-        "body": message
-    }
+    headers = {"X-ChatworkToken": CHATWORK_API_KEY}
+    data = {"body": message}
     
     try:
         response = requests.post(url, headers=headers, data=data)
-        if response.status_code == 200:
-            return True
-        return False
+        return response.status_code == 200
     except Exception as e:
-        print(f"Chatwork 投稿エラー: {e}")
+        print(f"エラー: {e}")
         return False
 
-# ============= Claude =============
-
-def analyze_with_claude(user_instruction: str, sheet_data: dict = None):
-    """Claude で分析・報告を生成"""
+def analyze_with_claude(user_message: str, saved_instruction: dict = None):
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
-    data_context = ""
-    if sheet_data:
-        data_context = f"\n【取得したデータ】\n{json.dumps(sheet_data, ensure_ascii=False)}"
+    context = ""
+    if saved_instruction:
+        context = f"""
+【保存されていた前回の指示】
+{saved_instruction['full_instruction']}
+
+【シート URL】
+{saved_instruction['sheet_url']}
+
+【列の構成】
+{json.dumps(saved_instruction['columns'], ensure_ascii=False)}
+        """
     
     prompt = f"""
-あなたは Enks 社の経理AI です。
+あなたは Enks 社の経理AIエージェントです。
 
-【受け取った指示】
-{user_instruction}
-{data_context}
+【ユーザーのメッセージ】
+{user_message}
+
+{context}
 
 【やること】
-この指示に応じて、入金チェックの報告を生成してください。
+1. このメッセージが「新しい指示」か「簡単な指示」かを判定
+2. 新しい指示の場合：シート URL と列の構成を抽出
+3. 簡単な指示の場合：前回の指示から自動実行
 
-【報告フォーマット】
-📊 [日付] 入金予実績チェック
-✅ 全体：予測 ¥X 実績 ¥Y 乖離 ¥Z（±X%）
-
-🔍 キャリア別：
-  • キャリアA：予測¥X → 実績¥Y（乖離¥Z）
-  • キャリアB：予測¥X → 実績¥Y（乖離¥Z）
-
-🚨 要注視：[異常があれば記載、なければ「なし」]
-
-上記のフォーマットで、報告を生成してください。
+以下の JSON を出力してください：
+{{
+  "is_new_instruction": true/false,
+  "instruction_type": "入金チェック",
+  "sheet_url": "URL",
+  "columns": {{"A列": "日付", ...}},
+  "report": "Chatwork に投稿する報告文"
+}}
 """
     
     message = client.messages.create(
         model="claude-opus-4-20250805",
-        max_tokens=1000,
+        max_tokens=2000,
         messages=[
             {"role": "user", "content": prompt}
         ]
     )
     
-    return message.content[0].text
-
-# ============= メイン =============
+    response_text = message.content[0].text
+    try:
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', response_text)
+        if json_match:
+            return json.loads(json_match.group())
+    except:
+        pass
+    
+    return {"is_new_instruction": False, "report": response_text}
 
 def main():
     print("\n" + "=" * 80)
     print(f"🤖 入金予測AIエージェント起動")
-    print(f"📅 実行時刻：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
     
+    init_database()
+    
     try:
-        # ステップ1：Chatwork から最新メッセージを取得
-        print("\n📥 ステップ1：Chatwork からメッセージを取得")
-        message = get_latest_message_from_chatwork()
+        print("\n📥 Chatwork からメッセージを取得")
+        user_message = get_latest_message()
         
-        if not message:
-            print("⚠️  Chatwork にメッセージがありません")
-            message = "テスト実行。Chatwork から指示をお待ちしています。"
-        else:
-            print(f"✅ メッセージ取得完了")
-            print(f"   内容：{message[:100]}")
+        if not user_message:
+            print("⚠️  メッセージがありません")
+            return
         
-        # ステップ2：Claude で分析
-        print("\n🤖 ステップ2：Claude で分析・報告生成")
-        report = analyze_with_claude(message)
+        print(f"✅ メッセージ取得：{user_message[:80]}...")
         
-        print("\n【生成された報告】")
+        print("\n🤖 Claude で分析")
+        analysis = analyze_with_claude(user_message)
+        
+        if analysis.get("is_new_instruction"):
+            print("\n💾 新しい指示を記憶")
+            save_instruction(
+                instruction_type=analysis.get("instruction_type", "入金チェック"),
+                full_instruction=user_message,
+                sheet_url=analysis.get("sheet_url"),
+                columns=analysis.get("columns")
+            )
+        
+        report = analysis.get("report", "チェック完了")
+        
+        print("\n【報告】")
         print("-" * 80)
         print(report)
         print("-" * 80)
         
-        # ステップ3：Chatwork に投稿
-        print("\n💬 ステップ3：Chatwork に投稿")
+        print("\n💬 Chatwork に投稿")
         success = post_to_chatwork(report)
         
         if success:
             print("✅ 投稿完了")
-        else:
-            print("⚠️  投稿に失敗しました")
+        
+        save_execution(
+            instruction_type=analysis.get("instruction_type", "入金チェック"),
+            data=user_message,
+            result=report,
+            posted=success
+        )
         
         print("\n" + "=" * 80)
         print("✅ 実行完了")
@@ -229,15 +245,6 @@ def main():
         print(f"\n❌ エラー: {e}")
         import traceback
         traceback.print_exc()
-        
-        # エラーを Chatwork に投稿
-        try:
-            error_msg = f"🚨 エラーが発生しました\n{str(e)}"
-            post_to_chatwork(error_msg)
-        except:
-            pass
-
-# ============= エントリーポイント =============
 
 if __name__ == "__main__":
     main()
