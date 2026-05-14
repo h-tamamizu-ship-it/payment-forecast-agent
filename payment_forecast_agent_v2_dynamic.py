@@ -9,6 +9,7 @@ load_dotenv()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHATWORK_API_KEY = os.getenv("CHATWORK_API_KEY")
 CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
+CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-haiku-20241022")
 
 def get_latest_message():
     url = f"https://api.chatwork.com/v2/rooms/{CHATWORK_ROOM_ID}/messages"
@@ -38,7 +39,7 @@ def call_claude(prompt):
         "anthropic-version": "2023-06-01"
     }
     data = {
-        "model": "claude-3-5-haiku-20241022",
+        "model": CLAUDE_MODEL,
         "max_tokens": 1024,
         "messages": [
             {"role": "user", "content": prompt}
