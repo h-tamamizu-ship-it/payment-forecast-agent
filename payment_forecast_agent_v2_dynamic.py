@@ -34,7 +34,8 @@ def call_claude(prompt):
     url = "https://api.anthropic.com/v1/messages"
     headers = {
         "x-api-key": ANTHROPIC_API_KEY,
-        "content-type": "application/json"
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01"
     }
     data = {
         "model": "claude-3-5-sonnet-20241022",
