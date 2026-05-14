@@ -11,6 +11,7 @@ app = Flask(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CHATWORK_API_KEY = os.getenv("CHATWORK_API_KEY")
+AI_CHATWORK_API_KEY = os.getenv("AI_CHATWORK_API_KEY")
 CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
@@ -120,13 +121,25 @@ def call_claude_api(prompt):
     except Exception as e:
         return f"失敗: {str(e)}"
 
-def post_to_chatwork(message: str):
+def post_to_chatwork(message: str, from_ai=True):
+    """
+    Chatwork にメッセージを投稿
+    from_ai=True の場合は AI アカウントで投稿
+    from_ai=False の場合はユーザーアカウントで投稿
+    """
+    api_key = AI_CHATWORK_API_KEY if from_ai else CHATWORK_API_KEY
+    
+    if not api_key:
+        print(f"❌ API キーが設定されていません (from_ai={from_ai})")
+        return
+    
     url = f"https://api.chatwork.com/v2/rooms/{CHATWORK_ROOM_ID}/messages"
-    headers = {"X-ChatworkToken": CHATWORK_API_KEY}
+    headers = {"X-ChatworkToken": api_key}
     try:
         requests.post(url, headers=headers, data={"body": message}, timeout=10)
+        print(f"✅ Chatwork に投稿完了 (from_ai={from_ai})")
     except Exception as e:
-        print(f"Chatwork error: {e}")
+        print(f"❌ Chatwork error: {e}")
 
 def detect_task_and_type(user_message):
     """
@@ -147,7 +160,6 @@ def detect_task_and_type(user_message):
     
     if detected_task:
         # 既存タスク関連のメッセージ
-        # 「修正」「変更」「いや」「別に」など修正キーワードがあるか
         修正_keywords = ["いや", "変更", "修正", "別に", "じゃなくて", "のじゃなく", "もっと", "削除", "追加", "こう出して", "こういう形式", "この順番", "違う"]
         
         is_update = any(keyword in user_message for keyword in 修正_keywords)
@@ -166,7 +178,6 @@ def detect_task_and_type(user_message):
             }
     else:
         # タスク名が含まれていない
-        # 新規タスクか、通常の質問かを判定
         task_keywords = ["チェック", "確認", "分析", "レポート", "照合", "集計", "計算"]
         is_new_task = any(keyword in user_message for keyword in task_keywords)
         
@@ -196,7 +207,7 @@ def execute_task_with_history(task_name, original_instruction, user_message):
     history_text = ""
     if history:
         history_text = "\n\n【過去のやり取り履歴】\n"
-        for user_msg, ai_resp in reversed(history):  # 古い順に表示
+        for user_msg, ai_resp in reversed(history):
             history_text += f"ユーザー: {user_msg[:100]}\n"
             history_text += f"AI: {ai_resp[:100]}...\n\n"
     
@@ -314,7 +325,6 @@ def webhook():
         
         if message_type == "new_task":
             # 新規タスク指示
-            # Claude に「これは何というタスクか」を判定させる
             prompt = f"""このメッセージから、タスク名を抽出してください（5文字程度）：
 {message_body}
 
@@ -332,7 +342,6 @@ def webhook():
         
         elif message_type == "update_or_refine":
             # 既存タスクの修正・改善指示
-            # 現在の指示に新しい要望を追加
             current_instruction = get_task(task_name)
             updated_instruction = f"{current_instruction}\n\n【追加指示】\n{message_body}"
             
@@ -342,7 +351,6 @@ def webhook():
         
         elif message_type == "follow_up_question":
             # 既存タスクについてのフォローアップ質問
-            # 過去のやり取りを参照してレポートを実行
             current_instruction = get_task(task_name)
             ai_response = execute_task_with_history(task_name, current_instruction, message_body)
             print(f"✅ タスク実行（履歴参照）: {task_name}")
@@ -351,11 +359,10 @@ def webhook():
         else:
             # 通常の質問・雑談
             ai_response = answer_question(message_body, relevant_task=task_name)
-            # 通常質問は履歴に保存しない
             print(f"💬 通常質問に回答")
         
-        # Chatwork に投稿
-        post_to_chatwork(ai_response)
+        # ========== AI アカウントで Chatwork に投稿 ==========
+        post_to_chatwork(ai_response, from_ai=True)
         
         return 'OK', 200
     
