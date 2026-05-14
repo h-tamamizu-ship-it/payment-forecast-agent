@@ -12,11 +12,16 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 @app.route('/', methods=['GET', 'POST'])
 def webhook():
+    print(f"DEBUG: Request received - Method: {request.method}")
+    print(f"DEBUG: Request data: {request.get_data()}")
+    print(f"DEBUG: Request JSON: {request.get_json()}")
+    
     if request.method == 'GET':
         return 'OK', 200
     
     try:
         data = request.get_json()
+        print(f"DEBUG: Parsed data: {data}")
         message_body = data.get('webhook_event', {}).get('body', '')
         
         if not message_body:
@@ -30,6 +35,8 @@ def webhook():
         return 'OK', 200
     except Exception as e:
         print(f"❌ エラー：{e}")
+        import traceback
+        traceback.print_exc()
         return 'Error', 500
 
 def post_to_chatwork(message: str):
