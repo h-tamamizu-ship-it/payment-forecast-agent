@@ -52,6 +52,18 @@ def get_all_tasks():
     conn.close()
     return tasks
 
+def get_task_history(task_name, limit=10):
+    """特定のタスクに関する過去のやり取りを取得"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''SELECT user_message, ai_response FROM conversation_history 
+                 WHERE task_name = ? 
+                 ORDER BY timestamp DESC 
+                 LIMIT ?''', (task_name, limit))
+    history = c.fetchall()
+    conn.close()
+    return history
+
 def save_or_update_task(task_name, instruction):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -116,77 +128,129 @@ def post_to_chatwork(message: str):
     except Exception as e:
         print(f"Chatwork error: {e}")
 
-def analyze_message(user_message):
+def detect_task_and_type(user_message):
+    """
+    メッセージから：
+    1. タスク名を検出（保存済みタスク名が含まれているか）
+    2. メッセージタイプを判定（新規/修正/実行/通常質問）
+    """
+    
     tasks = get_all_tasks()
-    tasks_text = "\n".join([f"- {name}: {inst[:50]}..." for name, inst in tasks]) if tasks else "（保存済みタスクなし）"
+    task_names = [name for name, _ in tasks]
     
-    prompt = f"""あなたは Enks 社の経理AI秘書です。
-
-【受け取ったメッセージ】
-{user_message}
-
-【現在の保存済みタスク】
-{tasks_text}
-
-メッセージの意図を判定して、JSON で返してください：
-
-{{
-  "message_type": "new_task",
-  "task_name": "入金チェック",
-  "instruction": "{user_message}",
-  "reason": "新規指示"
-}}
-
-メッセージが：
-- 新しい業務指示なら: message_type を "new_task"
-- 既存タスク修正なら: message_type を "update_task"  
-- 既存タスク実行なら: message_type を "execute_task"
-
-JSON だけを出力してください。他に何も出力しないでください。"""
+    # 保存済みタスク名がメッセージに含まれているか確認
+    detected_task = None
+    for task_name in task_names:
+        if task_name in user_message:
+            detected_task = task_name
+            break
     
-    response = call_claude_api(prompt)
-    print(f"DEBUG: Claude response: {response}")
-    
-    try:
-        import re
-        # 複数の { } がある場合は最初のものを取得
-        json_match = re.search(r'\{[^{}]*\}', response)
-        if json_match:
-            parsed = json.loads(json_match.group())
-            print(f"DEBUG: Parsed JSON: {parsed}")
-            return parsed
-    except Exception as e:
-        print(f"JSON パース失敗: {e}, Response: {response}")
-    
-    # デフォルト：新規タスクとして扱う
-    print(f"DEBUG: Falling back to default")
-    return {
-        "message_type": "new_task",
-        "task_name": "デフォルトタスク",
-        "instruction": user_message,
-        "reason": "自動判定失敗のため新規タスクとして処理"
-    }
+    if detected_task:
+        # 既存タスク関連のメッセージ
+        # 「修正」「変更」「いや」「別に」など修正キーワードがあるか
+        修正_keywords = ["いや", "変更", "修正", "別に", "じゃなくて", "のじゃなく", "もっと", "削除", "追加", "こう出して", "こういう形式", "この順番", "違う"]
+        
+        is_update = any(keyword in user_message for keyword in 修正_keywords)
+        
+        if is_update:
+            return {
+                "task_name": detected_task,
+                "message_type": "update_or_refine",
+                "reason": "既存タスクの修正・改善指示"
+            }
+        else:
+            return {
+                "task_name": detected_task,
+                "message_type": "follow_up_question",
+                "reason": "既存タスクについての質問・フォローアップ"
+            }
+    else:
+        # タスク名が含まれていない
+        # 新規タスクか、通常の質問かを判定
+        task_keywords = ["チェック", "確認", "分析", "レポート", "照合", "集計", "計算"]
+        is_new_task = any(keyword in user_message for keyword in task_keywords)
+        
+        if is_new_task:
+            return {
+                "task_name": None,
+                "message_type": "new_task",
+                "reason": "新しい業務指示と思われる"
+            }
+        else:
+            return {
+                "task_name": None,
+                "message_type": "general_question",
+                "reason": "通常の質問・雑談"
+            }
 
-def execute_task(task_name, instruction):
+def execute_task_with_history(task_name, original_instruction, user_message):
+    """
+    タスクを実行する。
+    過去のやり取り履歴を参照して、過去の修正指示を自動で反映させる。
+    """
+    
+    # 過去のやり取りを取得
+    history = get_task_history(task_name, limit=5)
+    
+    # 過去のやり取りから「修正パターン」を抽出
+    history_text = ""
+    if history:
+        history_text = "\n\n【過去のやり取り履歴】\n"
+        for user_msg, ai_resp in reversed(history):  # 古い順に表示
+            history_text += f"ユーザー: {user_msg[:100]}\n"
+            history_text += f"AI: {ai_resp[:100]}...\n\n"
+    
     prompt = f"""あなたは Enks 社の経理AI秘書です。
 
 【タスク名】
 {task_name}
 
-【指示内容】
-{instruction}
+【初期指示】
+{original_instruction}
+
+【ユーザーの最新リクエスト】
+{user_message}
+
+{history_text}
 
 【対応】
-この指示に基づいて、{task_name} の報告を作成してください。
+以下のルールで報告を作成してください：
 
-形式：
-📊 {task_name} チェック結果
+1. 過去のやり取りから「ユーザーの好みの形式・詳細度」を学習
+2. 最新リクエストを反映（「もっと詳しく」「エリア別で」など）
+3. 過去の修正を全て反映したレポートを出力
+
+形式例：
+📊 {task_name} レポート
 ✅ 実行完了
-🔍 [具体的な分析内容またはフィードバック]
+🔍 [詳細な内容 - 過去の修正全て反映]
 🚨 要注視：[該当なければ「なし」]
 
-データがまだ提供されていない場合は、どのようなデータが必要かを指摘してください。
-詳細な報告を作成してください。"""
+詳細なレポートを作成してください。"""
+    
+    return call_claude_api(prompt)
+
+def answer_question(user_message, relevant_task=None):
+    """
+    通常の質問に答える。
+    関連するタスクがあれば、そのコンテキストを含める。
+    """
+    
+    context = ""
+    if relevant_task:
+        instruction = get_task(relevant_task)
+        if instruction:
+            context = f"\n\n【関連するタスク: {relevant_task}】\n指示: {instruction}"
+    
+    prompt = f"""あなたは Enks 社の経理AI秘書です。
+
+【ユーザーの質問】
+{user_message}
+{context}
+
+【対応】
+質問に対して、簡潔かつ正確に答えてください。
+必要に応じて、関連するタスク情報を活用してください。"""
     
     return call_claude_api(prompt)
 
@@ -209,10 +273,12 @@ def webhook():
         if not message_body:
             return 'OK', 200
         
+        # AI の返信（✅で始まる）に反応しない
         if message_body.startswith('✅'):
             print(f"⚠️ AI の返信をスキップ")
             return 'OK', 200
         
+        # 重複排除
         message_hash = hashlib.sha256(message_body.encode()).hexdigest()
         
         conn = sqlite3.connect(DB_PATH)
@@ -231,39 +297,59 @@ def webhook():
         conn.commit()
         conn.close()
         
-        # 分析
-        analysis = analyze_message(message_body)
-        print(f"分析結果: {analysis['message_type']} / {analysis['task_name']}")
+        # ========== メッセージタイプの判定 ==========
         
-        message_type = analysis['message_type']
-        task_name = analysis['task_name']
-        instruction = analysis.get('instruction', message_body)
+        detection = detect_task_and_type(message_body)
+        message_type = detection['message_type']
+        task_name = detection['task_name']
+        
+        print(f"判定: {message_type} / {task_name}")
+        
+        # ========== メッセージタイプに応じた処理 ==========
         
         if message_type == "new_task":
-            save_or_update_task(task_name, instruction)
-            ai_response = f"✅ 新しいタスク「{task_name}」を記憶しました。\n\n指示内容：\n{instruction}"
+            # 新規タスク指示
+            # Claude に「これは何というタスクか」を判定させる
+            prompt = f"""このメッセージから、タスク名を抽出してください（5文字程度）：
+{message_body}
+
+例：「入金チェック」「請求書照合」
+
+タスク名だけを返してください。"""
+            
+            extracted_task_name = call_claude_api(prompt).strip()
+            if not extracted_task_name or len(extracted_task_name) > 20:
+                extracted_task_name = "新規タスク"
+            
+            save_or_update_task(extracted_task_name, message_body)
+            ai_response = f"✅ 新しいタスク「{extracted_task_name}」を記憶しました。\n\n指示内容：\n{message_body}"
+            save_conversation(message_body, ai_response, extracted_task_name)
         
-        elif message_type == "update_task":
-            save_or_update_task(task_name, instruction)
-            ai_response = f"✅ タスク「{task_name}」を更新しました。\n\n新しい指示：\n{instruction}"
+        elif message_type == "update_or_refine":
+            # 既存タスクの修正・改善指示
+            # 現在の指示に新しい要望を追加
+            current_instruction = get_task(task_name)
+            updated_instruction = f"{current_instruction}\n\n【追加指示】\n{message_body}"
+            
+            save_or_update_task(task_name, updated_instruction)
+            ai_response = f"✅ タスク「{task_name}」を更新しました。\n\n追加指示：\n{message_body}\n\n次回からはこの修正を反映して実行します。"
+            save_conversation(message_body, ai_response, task_name)
         
-        elif message_type == "execute_task":
-            saved_instruction = get_task(task_name)
-            if saved_instruction:
-                ai_response = execute_task(task_name, saved_instruction)
-                print(f"✅ タスク実行: {task_name}")
-            else:
-                ai_response = f"❌ タスク「{task_name}」が見つかりません。\n\n保存済みタスク：\n"
-                tasks = get_all_tasks()
-                if tasks:
-                    ai_response += "\n".join([f"- {name}" for name, _ in tasks])
-                else:
-                    ai_response += "（なし）\n\n新しいタスクは「タスク名：指示内容」という形式で教えてください。"
+        elif message_type == "follow_up_question":
+            # 既存タスクについてのフォローアップ質問
+            # 過去のやり取りを参照してレポートを実行
+            current_instruction = get_task(task_name)
+            ai_response = execute_task_with_history(task_name, current_instruction, message_body)
+            print(f"✅ タスク実行（履歴参照）: {task_name}")
+            save_conversation(message_body, ai_response, task_name)
         
         else:
-            ai_response = "⚠️ メッセージの意図が判定できませんでした。\n\n以下の形式で指示してください：\n- 新規：「入金チェック：このシートの A列を見てね」\n- 修正：「入金チェック：いや、B列を見てね」\n- 実行：「入金チェック」 or 「チェック」"
+            # 通常の質問・雑談
+            ai_response = answer_question(message_body, relevant_task=task_name)
+            # 通常質問は履歴に保存しない
+            print(f"💬 通常質問に回答")
         
-        save_conversation(message_body, ai_response, task_name)
+        # Chatwork に投稿
         post_to_chatwork(ai_response)
         
         return 'OK', 200
