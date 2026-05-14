@@ -22,7 +22,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT,
         user_message TEXT,
-        ai_response TEXT
+        ai_response TEXT,
+        message_hash TEXT UNIQUE
     )''')
     conn.commit()
     conn.close()
@@ -76,15 +77,27 @@ def webhook():
         if not message_body:
             return 'OK', 200
         
+        # メッセージのハッシュ値を計算（重複排除用）
+        message_hash = str(hash(message_body))
+        
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        
+        # 同じメッセージが既に処理されているか確認
+        c.execute('SELECT id FROM messages WHERE message_hash = ?', (message_hash,))
+        if c.fetchone():
+            print(f"⚠️ 重複メッセージをスキップ: {message_body[:30]}")
+            conn.close()
+            return 'OK', 200
+        
         print(f"📥 受信: {message_body}")
         
         prompt = f"経理分析AI として以下のメッセージに答えてください（簡潔に）：{message_body}"
         ai_response = call_claude_api(prompt)
         
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('INSERT INTO messages (timestamp, user_message, ai_response) VALUES (?, ?, ?)',
-                  (datetime.now().isoformat(), message_body, ai_response))
+        # DB に保存
+        c.execute('INSERT INTO messages (timestamp, user_message, ai_response, message_hash) VALUES (?, ?, ?, ?)',
+                  (datetime.now().isoformat(), message_body, ai_response, message_hash))
         conn.commit()
         conn.close()
         
