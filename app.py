@@ -146,7 +146,7 @@ def detect_google_sheets_config(user_message):
     メッセージから Google Sheets 連携指示を検出
     """
     # Google Sheets URL を検出
-    url_match = re.search(r'https://docs\.google\.com/spreadsheets/d/[a-zA-Z0-9-_]+', user_message)
+    url_match = re.search(r'https://docs\.google\.com/spreadsheets/d/[a-zA-Z0-9\-_]+(?:/[a-zA-Z0-9\-_#=?&/]*)?', user_message)
     
     if not url_match:
         return {"detected": False}
