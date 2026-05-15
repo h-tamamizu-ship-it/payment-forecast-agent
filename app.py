@@ -59,6 +59,7 @@ def init_db():
     
     conn.commit()
     conn.close()
+    
 def init_google_sheets_client():
     """Google Sheets API クライアントを初期化"""
     try:
