@@ -6,6 +6,9 @@ import sqlite3
 from datetime import datetime
 import traceback
 import hashlib
+import gspread                                    # ← この 3 行を追加
+from google.oauth2.service_account import Credentials
+import re
 
 app = Flask(__name__)
 
@@ -14,6 +17,7 @@ CHATWORK_API_KEY = os.getenv("CHATWORK_API_KEY")
 AI_CHATWORK_API_KEY = os.getenv("AI_CHATWORK_API_KEY")
 CHATWORK_ROOM_ID = os.getenv("CHATWORK_ROOM_ID")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+GOOGLE_SHEETS_CREDENTIALS = os.getenv("GOOGLE_SHEETS_CREDENTIALS")  # ← この 1 行を追加
 
 # AI アカウント ID
 AI_ACCOUNT_ID = "11369834"
@@ -45,8 +49,174 @@ def init_db():
         task_name TEXT
     )''')
     
+    c.execute('''CREATE TABLE IF NOT EXISTS google_sheets_config (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_name TEXT UNIQUE,
+        sheet_url TEXT,
+        columns TEXT,
+        last_updated TEXT
+    )''')
+    
     conn.commit()
     conn.close()
+def init_google_sheets_client():
+    """Google Sheets API クライアントを初期化"""
+    try:
+        if not GOOGLE_SHEETS_CREDENTIALS:
+            print("⚠️ GOOGLE_SHEETS_CREDENTIALS が設定されていません")
+            return None
+        
+        creds_dict = json.loads(GOOGLE_SHEETS_CREDENTIALS)
+        creds = Credentials.from_service_account_info(
+            creds_dict,
+            scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+        )
+        return gspread.authorize(creds)
+    except Exception as e:
+        print(f"❌ Google Sheets クライアント初期化失敗: {e}")
+        return None
+
+GOOGLE_SHEETS_CLIENT = init_google_sheets_client()
+
+def fetch_google_sheets_data(sheet_url, columns):
+    """
+    Google Sheets から指定列のデータを取得
+    
+    Args:
+        sheet_url: Google Sheets の共有リンク
+        columns: 抽出する列名のリスト（例：["日付", "金額", "説明"]）
+    
+    Returns:
+        dict: {"status": "success" or "error", "data": [...], "message": "..."}
+    """
+    if not GOOGLE_SHEETS_CLIENT:
+        return {"status": "error", "message": "Google Sheets クライアントが初期化されていません"}
+    
+    try:
+        # URL から Spreadsheet ID を抽出
+        match = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', sheet_url)
+        if not match:
+            return {"status": "error", "message": "無効な Google Sheets URL です"}
+        
+        spreadsheet_id = match.group(1)
+        spreadsheet = GOOGLE_SHEETS_CLIENT.open_by_key(spreadsheet_id)
+        
+        # 最初のシートを取得
+        worksheet = spreadsheet.get_worksheet(0)
+        
+        if not worksheet:
+            return {"status": "error", "message": "シートが見つかりません"}
+        
+        # ヘッダー行を取得
+        header_row = worksheet.row_values(1)
+        
+        # 指定列のインデックスを検出
+        column_indices = {}
+        for col_name in columns:
+            if col_name in header_row:
+                column_indices[col_name] = header_row.index(col_name)
+            else:
+                return {"status": "error", "message": f"列「{col_name}」が見つかりません。利用可能な列: {header_row}"}
+        
+        # 全行を取得
+        all_rows = worksheet.get_all_values()
+        
+        # 指定列のデータのみを抽出
+        extracted_data = []
+        for row in all_rows[1:]:  # ヘッダーをスキップ
+            row_data = {}
+            for col_name, col_index in column_indices.items():
+                row_data[col_name] = row[col_index] if col_index < len(row) else ""
+            extracted_data.append(row_data)
+        
+        return {
+            "status": "success",
+            "data": extracted_data,
+            "message": f"{len(extracted_data)} 行のデータを取得しました"
+        }
+    
+    except gspread.exceptions.SpreadsheetNotFound:
+        return {"status": "error", "message": "スプレッドシートが見つかりません。共有設定を確認してください"}
+    except Exception as e:
+        return {"status": "error", "message": f"Google Sheets 読み込みエラー: {str(e)}"}
+
+def detect_google_sheets_config(user_message):
+    """
+    メッセージから Google Sheets 連携指示を検出
+    """
+    # Google Sheets URL を検出
+    url_match = re.search(r'https://docs\.google\.com/spreadsheets/d/[a-zA-Z0-9-_]+', user_message)
+    
+    if not url_match:
+        return {"detected": False}
+    
+    sheet_url = url_match.group(0)
+    
+    # 列情報を検出
+    columns = []
+    
+    # columns: 形式を検出
+    columns_match = re.search(r'columns?\s*[:：]\s*([^\n,]+(?:,[^\n,]+)*)', user_message)
+    if columns_match:
+        columns_text = columns_match.group(1)
+        columns = [col.strip() for col in columns_text.split(',')]
+    else:
+        # URL の直後の情報から列を抽出
+        after_url = user_message[url_match.end():]
+        first_line = after_url.split('\n')[0]
+        first_line = first_line.strip().strip('　').strip()
+        
+        if first_line and not any(keyword in first_line.lower() for keyword in ['http', 'google', 'sheets']):
+            columns = [col.strip() for col in first_line.split(',')]
+    
+    if not columns:
+        return {"detected": True, "sheet_url": sheet_url, "columns": None}
+    
+    return {
+        "detected": True,
+        "sheet_url": sheet_url,
+        "columns": columns
+    }
+
+def save_google_sheets_config(task_name, sheet_url, columns):
+    """Google Sheets 設定を保存"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    
+    c.execute('SELECT id FROM google_sheets_config WHERE task_name = ?', (task_name,))
+    
+    columns_json = json.dumps(columns)
+    
+    if c.fetchone():
+        c.execute('''UPDATE google_sheets_config 
+                     SET sheet_url = ?, columns = ?, last_updated = ? 
+                     WHERE task_name = ?''',
+                  (sheet_url, columns_json, now, task_name))
+    else:
+        c.execute('''INSERT INTO google_sheets_config 
+                     (task_name, sheet_url, columns, last_updated) 
+                     VALUES (?, ?, ?, ?)''',
+                  (task_name, sheet_url, columns_json, now))
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ Google Sheets 設定を保存: {task_name}")
+
+def get_google_sheets_config(task_name):
+    """タスクの Google Sheets 設定を取得"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT sheet_url, columns FROM google_sheets_config WHERE task_name = ?', (task_name,))
+    result = c.fetchone()
+    conn.close()
+    
+    if result:
+        return {
+            "sheet_url": result[0],
+            "columns": json.loads(result[1])
+        }
+    return None
 
 def get_all_tasks():
     conn = sqlite3.connect(DB_PATH)
