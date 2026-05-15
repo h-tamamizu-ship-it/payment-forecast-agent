@@ -368,10 +368,11 @@ def detect_task_and_type(user_message):
                 "reason": "通常の質問・雑談"
             }
 
-def execute_task_with_history(task_name, original_instruction, user_message):
+def execute_task_with_history(task_name, original_instruction, user_message, sheets_context=""):
     """
     タスクを実行する。
     過去のやり取り履歴を参照して、過去の修正指示を自動で反映させる。
+    Google Sheets データがあれば含める。
     """
     
     # 過去のやり取りを取得
@@ -385,7 +386,11 @@ def execute_task_with_history(task_name, original_instruction, user_message):
             history_text += f"ユーザー: {user_msg[:100]}\n"
             history_text += f"AI: {ai_resp[:100]}...\n\n"
     
-    prompt = f"""あなたは Enks 社の経理AI秘書です。
+    # sheets_context にデータが含まれているかチェック
+    has_sheets_data = sheets_context and "Google Sheets データ" in sheets_context
+    
+    if has_sheets_data:
+        prompt = f"""あなたは Enks 社の経理AI秘書です。
 
 【タスク名】
 {task_name}
@@ -396,7 +401,43 @@ def execute_task_with_history(task_name, original_instruction, user_message):
 【ユーザーの最新リクエスト】
 {user_message}
 
-{history_text}
+{history_text}{sheets_context}
+
+【対応】
+以下のルールで報告を作成してください：
+
+1. 提供されたGoogle Sheets データを必ず分析してください
+2. データから数値、合計、トレンド、異常値を抽出
+3. ユーザーのリクエストに対して、データに基づいた具体的な回答を作成
+4. 過去のやり取りから「ユーザーの好みの形式・詳細度」を学習し反映
+5. 過去の修正指示を全て反映したレポートを出力
+
+【重要】
+このデータを「見てください」ではなく「分析してレポートを作成してください」
+
+形式例：
+📊 {task_name} レポート
+✅ 実行完了
+🔍 データ分析結果：
+  - 総数：XX件
+  - 合計金額：¥XXX,XXX
+  - 主な内容：...
+🚨 要注視：[該当あれば記載、なければ「なし」]
+
+詳細で具体的なレポートを作成してください。"""
+    else:
+        prompt = f"""あなたは Enks 社の経理AI秘書です。
+
+【タスク名】
+{task_name}
+
+【初期指示】
+{original_instruction}
+
+【ユーザーの最新リクエスト】
+{user_message}
+
+{history_text}{sheets_context}
 
 【対応】
 以下のルールで報告を作成してください：
